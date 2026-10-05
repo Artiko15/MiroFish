@@ -727,12 +727,17 @@ const sendToAgent = async (message) => {
     prompt = `以下是我们之前的对话：\n${historyContext}\n\n现在我的新问题是：${message}`
   }
   
+  // Individual chat uses one platform intentionally. Dual-platform interviews double
+  // the OASIS LLM work and were the main source of IPC timeouts for single-agent chat.
   const res = await interviewAgents({
     simulation_id: props.simulationId,
     interviews: [{
       agent_id: selectedAgentIndex.value,
-      prompt: prompt
-    }]
+      prompt: prompt,
+      platform: 'reddit'
+    }],
+    platform: 'reddit',
+    timeout: 120
   })
   
   if (res.success && res.data) {
@@ -814,9 +819,16 @@ const submitSurvey = async () => {
       prompt: surveyQuestion.value.trim()
     }))
     
+    // Keep surveys on one platform so a stalled Twitter-side action cannot
+    // hold the whole questionnaire behind the IPC timeout.
     const res = await interviewAgents({
       simulation_id: props.simulationId,
-      interviews: interviews
+      interviews: interviews.map(interview => ({
+        ...interview,
+        platform: 'reddit'
+      })),
+      platform: 'reddit',
+      timeout: 300
     })
     
     if (res.success && res.data) {
