@@ -6,6 +6,7 @@ LLM客户端封装
 import json
 import logging
 import re
+import time
 from typing import Optional, Dict, Any, List
 from openai import OpenAI
 
@@ -187,26 +188,48 @@ class LLMClient:
             # regeneration. An explicit response_format rejection may add one
             # request, but it must not consume a content attempt.
             while True:
-                try:
-                    response = self._create_completion(
-                        messages=messages,
-                        temperature=temperature,
-                        max_tokens=request_max_tokens,
-                        response_format=response_format,
-                    )
-                except Exception as error:
-                    if (
-                        response_format is not None
-                        and _is_response_format_unsupported(error)
-                    ):
-                        logger.warning(
-                            "LLM provider explicitly rejected response_format; "
-                            "retrying once with prompt-only JSON guidance"
+                response = None
+                for provider_attempt in range(1, 4):
+                    try:
+                        response = self._create_completion(
+                            messages=messages,
+                            temperature=temperature,
+                            max_tokens=request_max_tokens,
+                            response_format=response_format,
                         )
-                        response_format = None
-                        continue
-                    raise
-                break
+                        break
+                    except Exception as error:
+                        status = getattr(error, "status_code", None)
+                        body = getattr(error, "body", None)
+                        logger.error(
+                            "LLM provider request failed: type=%s status=%s "
+                            "attempt=%s/3 body=%r",
+                            type(error).__name__,
+                            status,
+                            provider_attempt,
+                            body,
+                        )
+                        if (
+                            response_format is not None
+                            and _is_response_format_unsupported(error)
+                        ):
+                            logger.warning(
+                                "LLM provider explicitly rejected response_format; "
+                                "retrying once with prompt-only JSON guidance"
+                            )
+                            response_format = None
+                            break
+                        if (
+                            isinstance(status, int)
+                            and 500 <= status < 600
+                            and provider_attempt < 3
+                        ):
+                            time.sleep(provider_attempt * 2)
+                            continue
+                        raise
+                if response is not None:
+                    break
+                continue
 
             try:
                 return self._parse_json_response(response)
