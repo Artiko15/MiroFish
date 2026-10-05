@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import time
+import os
 from typing import Optional, Dict, Any, List
 from openai import OpenAI
 
@@ -101,6 +102,15 @@ class LLMClient:
         self.api_key = api_key or Config.LLM_API_KEY
         self.base_url = base_url or Config.LLM_BASE_URL
         self.model = model or Config.LLM_MODEL_NAME
+        self._fallback_models = [
+            m.strip()
+            for m in os.environ.get(
+                "LLM_FALLBACK_MODELS",
+                "gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3-flash-preview"
+            ).split(",")
+            if m.strip()
+        ]
+        self._fallback_index = 0
         
         if not self.api_key:
             raise ValueError("LLM_API_KEY 未配置")
@@ -219,13 +229,37 @@ class LLMClient:
                             )
                             response_format = None
                             break
+                        if isinstance(status, int) and 500 <= status < 600:
+                            if (
+                                "generativelanguage.googleapis.com" in self.base_url
+                                and self._fallback_index < len(self._fallback_models)
+                            ):
+                                previous_model = self.model
+                                self.model = self._fallback_models[self._fallback_index]
+                                self._fallback_index += 1
+                                logger.warning(
+                                    "Gemini model %s unavailable (%s); falling back to %s",
+                                    previous_model, status, self.model,
+                                )
+                                break
+                            if provider_attempt < 3:
+                                time.sleep(provider_attempt * 2)
+                                continue
+
                         if (
-                            isinstance(status, int)
-                            and 500 <= status < 600
-                            and provider_attempt < 3
+                            status == 404
+                            and "generativelanguage.googleapis.com" in self.base_url
+                            and self._fallback_index < len(self._fallback_models)
                         ):
-                            time.sleep(provider_attempt * 2)
-                            continue
+                            previous_model = self.model
+                            self.model = self._fallback_models[self._fallback_index]
+                            self._fallback_index += 1
+                            logger.warning(
+                                "Gemini model %s was not found/supported; falling back to %s",
+                                previous_model, self.model,
+                            )
+                            break
+
                         raise
                 if response is not None:
                     break
