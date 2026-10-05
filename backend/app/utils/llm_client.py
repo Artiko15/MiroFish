@@ -229,6 +229,23 @@ class LLMClient:
                             )
                             response_format = None
                             break
+                        if (
+                            isinstance(status, int)
+                            and status == 429
+                            and "generativelanguage.googleapis.com" in self.base_url
+                            and self._fallback_index < len(self._fallback_models)
+                        ):
+                            previous_model = self.model
+                            self.model = self._fallback_models[self._fallback_index]
+                            self._fallback_index += 1
+                            logger.warning(
+                                "Gemini model %s quota/rate limited; "
+                                "falling back to %s instead of waiting for quota reset",
+                                previous_model,
+                                self.model,
+                            )
+                            break
+
                         if isinstance(status, int) and 500 <= status < 600:
                             if (
                                 "generativelanguage.googleapis.com" in self.base_url
