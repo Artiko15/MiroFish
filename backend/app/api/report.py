@@ -152,9 +152,16 @@ def generate_report():
                 "error": t('api.missingSimRequirement')
             }), 400
         
-        # 提前生成 report_id，以便立即返回给前端
+        # Reuse an interrupted/failed report when possible.
         import uuid
-        report_id = f"report_{uuid.uuid4().hex[:12]}"
+        report_id = None
+        if not force_regenerate:
+            existing_report = ReportManager.get_report_by_simulation(simulation_id)
+            if existing_report and existing_report.status != ReportStatus.COMPLETED:
+                report_id = existing_report.report_id
+                logger.info("Resuming existing report %s", report_id)
+        if not report_id:
+            report_id = f"report_{uuid.uuid4().hex[:12]}"
         
         # Register the background report as a graph reader under the same lock
         # used by graph deletion and updater startup. A lock itself cannot be
