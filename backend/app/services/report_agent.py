@@ -1634,38 +1634,67 @@ class ReportAgent:
             )
             ReportManager.save_report(report)
             
-            # 阶段1: 规划大纲
-            report.status = ReportStatus.PLANNING
-            ReportManager.update_progress(
-                report_id, "planning", 5, t('progress.startPlanningOutline'),
-                completed_sections=[]
-            )
-            
-            # 记录规划开始日志
-            self.report_logger.log_planning_start()
-            
-            if progress_callback:
-                progress_callback("planning", 0, t('progress.startPlanningOutline'))
-            
-            outline = self.plan_outline(
-                progress_callback=lambda stage, prog, msg: 
-                    progress_callback(stage, prog // 5, msg) if progress_callback else None
-            )
-            report.outline = outline
-            
-            # 记录规划完成日志
-            self.report_logger.log_planning_complete(outline.to_dict())
-            
-            # 保存大纲到文件
-            ReportManager.save_outline(report_id, outline)
-            ReportManager.update_progress(
-                report_id, "planning", 15, t('progress.outlineDone', count=len(outline.sections)),
-                completed_sections=[]
-            )
-            ReportManager.save_report(report)
-            
-            logger.info(t('report.outlineSavedToFile', reportId=report_id))
-            
+            # 阶段1: 规划大纲 (or resume an interrupted report)
+            outline_path = ReportManager._get_outline_path(report_id)
+            existing_sections = ReportManager.get_generated_sections(report_id)
+            resume_report = os.path.exists(outline_path) and bool(existing_sections)
+
+            if resume_report:
+                logger.info(
+                    "Resuming report %s from %d saved sections",
+                    report_id, len(existing_sections)
+                )
+                with open(outline_path, 'r', encoding='utf-8') as f:
+                    outline_data = json.load(f)
+                outline = ReportOutline(
+                    title=outline_data["title"],
+                    summary=outline_data["summary"],
+                    sections=[
+                        ReportSection(title=s["title"], content=s.get("content", ""))
+                        for s in outline_data.get("sections", [])
+                    ]
+                )
+                report.outline = outline
+                generated_sections = []
+                completed_section_titles = []
+                completed_indices = set()
+                for saved in existing_sections:
+                    idx = saved["section_index"]
+                    if 1 <= idx <= len(outline.sections):
+                        completed_indices.add(idx)
+                        completed_section_titles.append(outline.sections[idx - 1].title)
+                        generated_sections.append(saved["content"])
+                ReportManager.update_progress(
+                    report_id, "generating", 15,
+                    "Resuming report from saved sections",
+                    completed_sections=completed_section_titles
+                )
+                ReportManager.save_report(report)
+            else:
+                report.status = ReportStatus.PLANNING
+                ReportManager.update_progress(
+                    report_id, "planning", 5, t('progress.startPlanningOutline'),
+                    completed_sections=[]
+                )
+                self.report_logger.log_planning_start()
+                if progress_callback:
+                    progress_callback("planning", 0, t('progress.startPlanningOutline'))
+                outline = self.plan_outline(
+                    progress_callback=lambda stage, prog, msg:
+                        progress_callback(stage, prog // 5, msg) if progress_callback else None
+                )
+                report.outline = outline
+                self.report_logger.log_planning_complete(outline.to_dict())
+                ReportManager.save_outline(report_id, outline)
+                ReportManager.update_progress(
+                    report_id, "planning", 15,
+                    t('progress.outlineDone', count=len(outline.sections)),
+                    completed_sections=[]
+                )
+                ReportManager.save_report(report)
+                logger.info(t('report.outlineSavedToFile', reportId=report_id))
+                generated_sections = []
+
             # 阶段2: 逐章节生成（分章节保存）
             report.status = ReportStatus.GENERATING
             
@@ -1674,6 +1703,14 @@ class ReportAgent:
             
             for i, section in enumerate(outline.sections):
                 section_num = i + 1
+
+                if resume_report and section_num in completed_indices:
+                    logger.info(
+                        "Skipping completed section %02d: %s",
+                        section_num, section.title
+                    )
+                    continue
+
                 base_progress = 20 + int((i / total_sections) * 70)
                 
                 # 更新进度
