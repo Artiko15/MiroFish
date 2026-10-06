@@ -106,7 +106,7 @@ class LLMClient:
             m.strip()
             for m in os.environ.get(
                 "LLM_FALLBACK_MODELS",
-                "gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-3-flash-preview"
+                "gemini-3.7-flash,gemini-3-flash-preview"
             ).split(",")
             if m.strip()
         ]
