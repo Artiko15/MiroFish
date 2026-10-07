@@ -1040,17 +1040,32 @@ def create_model(config: Dict[str, Any], use_boost: bool = False):
             "缺少 API Key 配置，请在项目根目录 .env 文件中设置 LLM_API_KEY"
         )
     
-    if llm_base_url:
-        os.environ["OPENAI_API_BASE_URL"] = llm_base_url
-    else:
-        # A missing base URL is fatal for Gemini/OpenAI-compatible recovery.
+    # Normalize the OpenAI-compatible endpoint before handing it to CAMEL.
+    # A hostname/path without a scheme causes httpx.UnsupportedProtocol.
+    llm_base_url = (llm_base_url or "").strip()
+    if llm_base_url and not llm_base_url.startswith(("http://", "https://")):
+        llm_base_url = "https://" + llm_base_url.lstrip("/")
+    
+    if not llm_base_url:
+        # If an optional boost key exists but its URL is missing, fall back to
+        # the general LLM endpoint instead of constructing an invalid client.
+        general_base_url = os.environ.get("LLM_BASE_URL", "").strip()
+        if general_base_url:
+            llm_base_url = general_base_url
+    
+    if llm_base_url and not llm_base_url.startswith(("http://", "https://")):
+        llm_base_url = "https://" + llm_base_url.lstrip("/")
+    
+    if not llm_base_url:
         raise ValueError(
-            "缺少 LLM_BASE_URL 配置，请在项目根目录 .env 文件中设置 LLM_BASE_URL"
+            "缺少有效的 LLM_BASE_URL 配置，请在项目根目录 .env 文件中设置 LLM_BASE_URL"
         )
+    
+    os.environ["OPENAI_API_BASE_URL"] = llm_base_url
     
     print(
         f"{config_label} model={llm_model}, "
-        f"base_url={llm_base_url[:60]}..."
+        f"base_url={llm_base_url[:80]}..."
     )
     
     return ModelFactory.create(
