@@ -1015,21 +1015,43 @@ def create_model(config: Dict[str, Any], use_boost: bool = False):
         llm_model = os.environ.get("LLM_MODEL_NAME", "")
         config_label = "[通用LLM]"
     
-    # 如果 .env 中没有模型名，则使用 config 作为备用
-    if not llm_model:
-        llm_model = config.get("llm_model", "gpt-4o-mini")
+    # Recovery/interview runs must use the live .env LLM configuration.
+    # Completed simulation configs can contain the original placeholder model
+    # (e.g. "your_model_name_here"), so never let that override the .env model.
+    config_model = config.get("llm_model", "")
+    if (
+        not llm_model
+        or llm_model.strip().lower() in {"your_model_name_here", "your_model", "placeholder"}
+        or llm_model.strip().lower().startswith("your_")
+    ):
+        llm_model = os.environ.get("LLM_MODEL_NAME", "").strip()
     
-    # 设置 camel-ai 所需的环境变量
+    # Gemini/OAI-compatible recovery fallback. The API key and base URL still
+    # must come from the environment; no secrets are written into simulation data.
+    if not llm_model:
+        llm_model = "gemini-3.6-flash"
+    
+    # Set camel-ai's OpenAI-compatible environment variables.
     if llm_api_key:
         os.environ["OPENAI_API_KEY"] = llm_api_key
     
     if not os.environ.get("OPENAI_API_KEY"):
-        raise ValueError("缺少 API Key 配置，请在项目根目录 .env 文件中设置 LLM_API_KEY")
+        raise ValueError(
+            "缺少 API Key 配置，请在项目根目录 .env 文件中设置 LLM_API_KEY"
+        )
     
     if llm_base_url:
         os.environ["OPENAI_API_BASE_URL"] = llm_base_url
+    else:
+        # A missing base URL is fatal for Gemini/OpenAI-compatible recovery.
+        raise ValueError(
+            "缺少 LLM_BASE_URL 配置，请在项目根目录 .env 文件中设置 LLM_BASE_URL"
+        )
     
-    print(f"{config_label} model={llm_model}, base_url={llm_base_url[:40] if llm_base_url else '默认'}...")
+    print(
+        f"{config_label} model={llm_model}, "
+        f"base_url={llm_base_url[:60]}..."
+    )
     
     return ModelFactory.create(
         model_platform=ModelPlatformType.OPENAI,
