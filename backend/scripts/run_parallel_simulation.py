@@ -1001,7 +1001,13 @@ def create_model(config: Dict[str, Any], use_boost: bool = False):
     boost_model = os.environ.get("LLM_BOOST_MODEL_NAME", "")
     has_boost_config = bool(boost_api_key)
     
-    # 根据参数和配置情况选择使用哪个 LLM
+    # 根据参数和配置情况选择哪个 LLM。
+    # Interview/recovery runs can override the exhausted simulation model with
+    # LLM_INTERVIEW_MODEL_NAME. This is intentionally separate from LLM_MODEL_NAME
+    # so the completed simulation configuration is never rewritten just to recover
+    # interviews after a provider quota is exhausted.
+    interview_model = os.environ.get("LLM_INTERVIEW_MODEL_NAME", "").strip()
+
     if use_boost and has_boost_config:
         # 使用加速配置
         llm_api_key = boost_api_key
@@ -1014,6 +1020,12 @@ def create_model(config: Dict[str, Any], use_boost: bool = False):
         llm_base_url = os.environ.get("LLM_BASE_URL", "")
         llm_model = os.environ.get("LLM_MODEL_NAME", "")
         config_label = "[通用LLM]"
+
+    # For interview recovery, allow a dedicated model override. This is useful
+    # when the normal model has exhausted its provider quota.
+    if interview_model:
+        llm_model = interview_model
+        config_label = "[Interview LLM]"
     
     # Recovery/interview runs must use the live .env LLM configuration.
     # Completed simulation configs can contain the original placeholder model
@@ -1029,7 +1041,7 @@ def create_model(config: Dict[str, Any], use_boost: bool = False):
     # Gemini/OAI-compatible recovery fallback. The API key and base URL still
     # must come from the environment; no secrets are written into simulation data.
     if not llm_model:
-        llm_model = "gemini-3.6-flash"
+        llm_model = "gemini-3.7-flash"
     
     # Set camel-ai's OpenAI-compatible environment variables.
     if llm_api_key:
