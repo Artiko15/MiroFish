@@ -1098,6 +1098,79 @@ class PlatformSimulation:
         self.total_actions = 0
 
 
+
+async def recover_interview_platform(
+    config: Dict[str, Any],
+    simulation_dir: str,
+    platform_name: str,
+    main_logger: Optional[SimulationLogManager] = None,
+) -> PlatformSimulation:
+    """Recreate a completed OASIS platform without resetting or replaying it.
+
+    This is specifically for post-simulation interviews. The existing SQLite
+    database is opened in-place, no agents are signed up again, no initial
+    posts are recreated, and no simulation rounds are executed.
+    """
+    result = PlatformSimulation()
+
+    def log_info(msg):
+        if main_logger:
+            main_logger.info(f"[{platform_name.title()}] {msg}")
+        print(f"[{platform_name.title()}] {msg}")
+
+    use_boost = platform_name == "reddit"
+    model = create_model(config, use_boost=use_boost)
+
+    if platform_name == "twitter":
+        profile_path = os.path.join(simulation_dir, "twitter_profiles.csv")
+        db_path = os.path.join(simulation_dir, "twitter_simulation.db")
+        if not os.path.exists(profile_path):
+            raise ValueError(f"Twitter profile文件不存在: {profile_path}")
+        if not os.path.exists(db_path):
+            raise ValueError(f"Twitter simulation数据库不存在: {db_path}")
+        result.agent_graph = await generate_twitter_agent_graph(
+            profile_path=profile_path,
+            model=model,
+            available_actions=TWITTER_ACTIONS,
+        )
+        oasis_platform = oasis.DefaultPlatformType.TWITTER
+    elif platform_name == "reddit":
+        profile_path = os.path.join(simulation_dir, "reddit_profiles.json")
+        db_path = os.path.join(simulation_dir, "reddit_simulation.db")
+        if not os.path.exists(profile_path):
+            raise ValueError(f"Reddit profile文件不存在: {profile_path}")
+        if not os.path.exists(db_path):
+            raise ValueError(f"Reddit simulation数据库不存在: {db_path}")
+        result.agent_graph = await generate_reddit_agent_graph(
+            profile_path=profile_path,
+            model=model,
+            available_actions=REDDIT_ACTIONS,
+        )
+        oasis_platform = oasis.DefaultPlatformType.REDDIT
+    else:
+        raise ValueError(f"不支持的Interview恢复平台: {platform_name}")
+
+    # IMPORTANT: open the completed database in-place. Do not call env.reset(),
+    # because OASIS reset signs up all agents again. We only reconnect the
+    # freshly-created agent objects to the live platform channel.
+    result.env = oasis.make(
+        agent_graph=result.agent_graph,
+        platform=oasis_platform,
+        database_path=db_path,
+        semaphore=30,
+    )
+
+    for _, agent in result.agent_graph.get_agents():
+        agent.channel = result.env.channel
+        agent.env.action.channel = result.env.channel
+
+    # Start OASIS's platform loop without generate_custom_agents/sign-up.
+    result.env.platform_task = asyncio.create_task(result.env.platform.running())
+    await asyncio.sleep(0)
+    log_info(f"已恢复完成模拟环境（保留现有数据库）: {db_path}")
+    return result
+
+
 async def run_twitter_simulation(
     config: Dict[str, Any], 
     simulation_dir: str,
@@ -1519,6 +1592,12 @@ async def main():
         default=False,
         help='模拟完成后立即关闭环境，不进入等待命令模式'
     )
+    parser.add_argument(
+        '--interview-only',
+        action='store_true',
+        default=False,
+        help='恢复已完成的模拟环境，仅进入Interview等待模式，不重跑模拟'
+    )
     
     args = parser.parse_args()
     
@@ -1532,7 +1611,7 @@ async def main():
     
     config = load_config(args.config)
     simulation_dir = os.path.dirname(args.config) or "."
-    wait_for_commands = not args.no_wait
+    wait_for_commands = args.interview_only or not args.no_wait
     
     # 初始化日志配置（禁用 OASIS 日志，清理旧文件）
     init_logging_for_simulation(simulation_dir)
@@ -1576,7 +1655,30 @@ async def main():
     twitter_result: Optional[PlatformSimulation] = None
     reddit_result: Optional[PlatformSimulation] = None
     
-    if args.twitter_only:
+    if args.interview_only:
+        # Recovery mode: reopen the completed databases and enter IPC mode.
+        # Never call the normal simulation runners here; they delete/recreate
+        # the databases and replay the scenario from round 0.
+        if args.twitter_only or args.reddit_only:
+            if args.twitter_only:
+                twitter_result = await recover_interview_platform(
+                    config, simulation_dir, "twitter", log_manager
+                )
+            else:
+                reddit_result = await recover_interview_platform(
+                    config, simulation_dir, "reddit", log_manager
+                )
+        else:
+            results = await asyncio.gather(
+                recover_interview_platform(config, simulation_dir, "twitter", log_manager),
+                recover_interview_platform(config, simulation_dir, "reddit", log_manager),
+            )
+            twitter_result, reddit_result = results
+        total_elapsed = (datetime.now() - start_time).total_seconds()
+        log_manager.info("=" * 60)
+        log_manager.info(f"Interview recovery complete! Elapsed: {total_elapsed:.1f}s")
+        log_manager.info("Existing simulation databases were preserved; no rounds were replayed.")
+    elif args.twitter_only:
         twitter_result = await run_twitter_simulation(config, simulation_dir, twitter_logger, log_manager, args.max_rounds)
     elif args.reddit_only:
         reddit_result = await run_reddit_simulation(config, simulation_dir, reddit_logger, log_manager, args.max_rounds)
