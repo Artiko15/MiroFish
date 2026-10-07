@@ -1150,23 +1150,19 @@ async def recover_interview_platform(
     else:
         raise ValueError(f"不支持的Interview恢复平台: {platform_name}")
 
-    # IMPORTANT: open the completed database in-place. Do not call env.reset(),
-    # because OASIS reset signs up all agents again. We only reconnect the
-    # freshly-created agent objects to the live platform channel.
+    # Reopen the completed database in-place. OASIS's reset() does two things:
+    # (1) starts the platform task and (2) binds each SocialAgent to the
+    # environment/channel via generate_custom_agents(). The latter is required
+    # for ManualAction(INTERVIEW). Existing users remain in the database; their
+    # sign-up INSERTs simply fail harmlessly with the existing-user constraint,
+    # while the original simulation rows are preserved.
     result.env = oasis.make(
         agent_graph=result.agent_graph,
         platform=oasis_platform,
         database_path=db_path,
         semaphore=30,
     )
-
-    for _, agent in result.agent_graph.get_agents():
-        agent.channel = result.env.channel
-        agent.env.action.channel = result.env.channel
-
-    # Start OASIS's platform loop without generate_custom_agents/sign-up.
-    result.env.platform_task = asyncio.create_task(result.env.platform.running())
-    await asyncio.sleep(0)
+    await result.env.reset()
     log_info(f"已恢复完成模拟环境（保留现有数据库）: {db_path}")
     return result
 
